@@ -22,6 +22,7 @@ if (!requireNamespace("BiocManager", quietly = TRUE))
 library(dplyr)
 library(Seurat)
 library(tidyverse)
+library(parallel)
 #####################################################
 
 #####################################################
@@ -36,7 +37,7 @@ library(tidyverse)
 # In the output from all functions, log2FC is base 2 logarithm of weighted-average.1/weighted-average.2,
 # where 1 and 2 mark identities or samples 1 and 2, respectively.
 ############
-# DGE.2samples(object,features=NULL,ident.1=NULL,ident.2=NULL,fc.thr=1,min.pct=0,max.pval=1,min.count=30,icc="i",df.correction=FALSE)
+# DGE.2samples(object,features=NULL,ident.1=NULL,ident.2=NULL,fc.thr=1,min.pct=0,max.pval=1,min.count=30,icc="i",df.correction=FALSE,n.cores=1)
 # object - Seurat's object for the analysis
 # features - list of genes to be analyzed (e.g., features=c("Actb","Actg1",...)), features=NULL causes analysis of all genes (default)
 # ident.1 and ident.2 - identities for 2 groups of cells to be analyzed, both must be defined
@@ -54,15 +55,16 @@ library(tidyverse)
 #       icc = 1 assumes equal weights of all cells and performs common, unweighted t-test
 # df.correction - correction for degrees of freedom due to uneven statistical weights; df.correction = TRUE performs a more stringent
 #                 weighted t-test when the number of cells is < 30-50 (not recommended)
+# n.cores - number of CPU cores to use for parallel processing (default = 1 for sequential processing)
 #
 # FUNCTION OUTPUT: dataframe with DGE analysis results
 #############
-# IterWghtTest(object,features=NULL,ident.1=NULL,ident.2=NULL,fc.thr=1,min.pct=0,max.pval=1,min.count=30,icc="i",df.correction=FALSE)
+# IterWghtTest(object,features=NULL,ident.1=NULL,ident.2=NULL,fc.thr=1,min.pct=0,max.pval=1,min.count=30,icc="i",df.correction=FALSE,n.cores=1)
 #   All parameters are the same as in DGE.2samples()
 #
 # FUNCTION OUTPUT: dataframe with DGE analysis results
 #############
-# DGE.Multisample(object,samples.1=NULL,samples.2=NULL,features=NULL,t.test=FALSE, min.pct=0.03,fc.thr=1,max.pval=1,icc="i",df.correction=FALSE)
+# DGE.Multisample(object,samples.1=NULL,samples.2=NULL,features=NULL,t.test=FALSE, min.pct=0.03,fc.thr=1,max.pval=1,icc="i",df.correction=FALSE,n.cores=1)
 # samples.1 and samples.2 - lists of at least 3 identities of biological replicates in each of the 2 groups of samples, e.g.,
 #                           samples.1 = c("WT1","WT2","WT3"), samples.2 = c("KO1","KO2","KO3")
 #                           renaming multiple technical replicates into the same biological replicate identity is recommended, otherwise 
@@ -72,6 +74,7 @@ library(tidyverse)
 # min.pct, fc.thr, max.pval, and df.correction (not recommended) are the same parameters as in DGE.2samples()
 # icc - same ICC selection as in DGE.2samples(); used for calculating the weighted average values within each sample but not for
 #       comparing the two groups of samples
+# n.cores - number of CPU cores to use for parallel processing (default = 1 for sequential processing)
 ##
 # FUNCTION OUTPUT: list of 3 items $DGE is a dataframe containing DGE analysis results, $Sstats is a dataframe containing sample statistics
 #                  $parameters is a named list of calculation parameters
@@ -98,24 +101,22 @@ library(tidyverse)
 #
 DGE.2samples <- function(object,features=NULL,ident.1=NULL,ident.2=NULL,
                          fc.thr=1,min.pct=0,max.pval=1,min.count=30,
-                         icc="i",df.correction=FALSE) {
-  IWT<-IterWghtTtest(object,features,ident.1,ident.2,fc.thr,min.pct,max.pval=max.pval,min.count,icc=icc,df.correction)
-  Chi2<-Chi2Test(object,features=rownames(IWT),ident.1,ident.2,fc.thr=1,min.pct,max.pval=1,min.count)
+                         icc="i",df.correction=FALSE,n.cores=1) {
+  IWT<-IterWghtTtest(object,features,ident.1,ident.2,fc.thr,min.pct,max.pval=max.pval,min.count,icc=icc,df.correction,n.cores=n.cores)
+  Chi2<-Chi2Test(object,features=rownames(IWT),ident.1,ident.2,fc.thr=1,min.pct,max.pval=1,min.count,n.cores=n.cores)
   features<-intersect(rownames(Chi2),rownames(IWT))
   output<-IWT[features,]
   output[features,"Chi2.p.value"]<-Chi2[features,2]
   return(output)
 }
 #Chi2 test
-Chi2Test <- function(object,features=NULL,ident.1=NULL,ident.2=NULL,fc.thr=1,min.pct=0,max.pval=1,min.count=30) {
+Chi2Test <- function(object,features=NULL,ident.1=NULL,ident.2=NULL,fc.thr=1,min.pct=0,max.pval=1,min.count=30,n.cores=1) {
   if (is.null(features)){
     GL <- rownames(object)
   } else {
     GL <- as.vector(features)
   }
   if (is.null(ident.1)|is.null(ident.2)) {stop("Two identities in a Seurat object must be defined using ident.1= and ident.2=")}
-  output<-data.frame(log2FC=numeric(),p.value=numeric(),col3=numeric(),col4=numeric())                               # output dataframe
-  colnames(output)<-c("log2FC","p.value","Counts/Cell.1","Counts/Cell.2")
   object.1 <- subset(object, idents = ident.1)                                                                       # object subsetting
   object.2 <- subset(object, idents = ident.2)
   Ci.1 <- as.matrix(object.1[["RNA"]]$counts)                                                                        # count matrices
@@ -126,45 +127,68 @@ Chi2Test <- function(object,features=NULL,ident.1=NULL,ident.2=NULL,fc.thr=1,min
   AC.2 <- rowSums(Ci.2)
   TC.1 <- sum(AC.1)                                                                                                  # total counts /sample
   TC.2 <- sum(AC.2)
-  rowi<-0
-  print("Performing chi^2 test:")
-  pb <- txtProgressBar(min = 0, max = length(GL), initial = 0, style = 3)                                            # initialize progress bar
-  for (rownum in c(1:length(GL))) {                                                                                  # main loop, gene by gene
-    if ((AC.1[GL[rownum]] >= min.count | AC.2[GL[rownum]] >= min.count)&                                             # checking for min.count and min.pct
-        ((sum(Ci.1[GL[rownum],]!=0)/Nc.1>min.pct)|(sum(Ci.2[GL[rownum],]!=0)/Nc.2>min.pct))){
-      ContTable <- matrix(c(TC.1 - AC.1[GL[rownum]], TC.2 - AC.2[GL[rownum]],                                        # contingency table for chi2 test
-                            AC.1[GL[rownum]], AC.2[GL[rownum]]), nrow = 2, ncol = 2)
-      fc <- as.numeric((AC.1[GL[rownum]]/TC.1)/(AC.2[GL[rownum]]/TC.2))                                              # fold change (FC)
-      if(!is.na(fc)){                                                                                                # removing features with undefined FC (=0/0)
-        if (fc >= fc.thr | fc <= 1/fc.thr) {                                                                         # checking FC threshold
-          chisquare <- as.numeric(chisq.test(ContTable)$p.value)                                                     # chi2 test
-          if (chisquare <= max.pval) {                                                                               # checking max.pval threshold
-            rowi<-rowi+1
-            output[[rowi,1]] <- as.numeric(format(log(fc,2), digits=4, scientific=FALSE))                            # output assembly
-            output[[rowi,2]] <- as.numeric(format(chisquare, digits=4, scientific=FALSE))
-            output[[rowi,3]] <- as.numeric(format(AC.1[GL[rownum]]/Nc.1, digits=4, scientific=FALSE))
-            output[[rowi,4]] <- as.numeric(format(AC.2[GL[rownum]]/Nc.2, digits=4, scientific=FALSE))
-            row.names(output)[rowi]<-GL[rownum]
-          }  
+  
+  # Function to process a single gene
+  process_gene <- function(gene_name) {
+    if ((AC.1[gene_name] >= min.count | AC.2[gene_name] >= min.count) &
+        ((sum(Ci.1[gene_name,]!=0)/Nc.1>min.pct)|(sum(Ci.2[gene_name,]!=0)/Nc.2>min.pct))){
+      ContTable <- matrix(c(TC.1 - AC.1[gene_name], TC.2 - AC.2[gene_name],
+                            AC.1[gene_name], AC.2[gene_name]), nrow = 2, ncol = 2)
+      fc <- as.numeric((AC.1[gene_name]/TC.1)/(AC.2[gene_name]/TC.2))
+      if(!is.na(fc)){
+        if (fc >= fc.thr | fc <= 1/fc.thr) {
+          chisquare <- as.numeric(chisq.test(ContTable)$p.value)
+          if (chisquare <= max.pval) {
+            return(data.frame(
+              log2FC = as.numeric(format(log(fc,2), digits=4, scientific=FALSE)),
+              p.value = as.numeric(format(chisquare, digits=4, scientific=FALSE)),
+              "Counts/Cell.1" = as.numeric(format(AC.1[gene_name]/Nc.1, digits=4, scientific=FALSE)),
+              "Counts/Cell.2" = as.numeric(format(AC.2[gene_name]/Nc.2, digits=4, scientific=FALSE)),
+              gene = gene_name,
+              stringsAsFactors = FALSE,
+              check.names = FALSE
+            ))
+          }
         }
       }
     }
-    setTxtProgressBar(pb, rownum)                                                                                    # progress bar update
+    return(NULL)
   }
-  close(pb)                                                                                                          # close progress bar
+  
+  print("Performing chi^2 test:")
+  if (n.cores > 1) {
+    # Parallel processing
+    results <- mclapply(GL, process_gene, mc.cores = n.cores)
+  } else {
+    # Sequential processing with progress bar
+    pb <- txtProgressBar(min = 0, max = length(GL), initial = 0, style = 3)
+    results <- lapply(seq_along(GL), function(i) {
+      setTxtProgressBar(pb, i)
+      process_gene(GL[i])
+    })
+    close(pb)
+  }
+  
+  # Combine results
+  results <- results[!sapply(results, is.null)]
+  if (length(results) == 0) {
+    output <- data.frame(log2FC=numeric(),p.value=numeric(),"Counts/Cell.1"=numeric(),"Counts/Cell.2"=numeric(), check.names=FALSE)
+  } else {
+    output <- do.call(rbind, results)
+    rownames(output) <- output$gene
+    output$gene <- NULL
+  }
   return(output)
 }
 #Weighted t-test with iterative weight calculation
 IterWghtTtest <- function(object,features=NULL,ident.1=NULL,ident.2=NULL,fc.thr=1,min.pct=0,max.pval=1,min.count=30,
-                          icc="i",df.correction=FALSE) {
+                          icc="i",df.correction=FALSE,n.cores=1) {
   if (is.null(features)){
     GeneList <- rownames(object)
   } else {
     GeneList <- as.vector(features)
   }
   if (is.null(ident.1)|is.null(ident.2)) {stop("Two identities in a Seurat object must be defined using ident.1= and ident.2=")}
-  output<-data.frame(log2FC=numeric(),p.value=numeric(), col3=numeric(),col4=numeric())                   # output dataframe
-  colnames(output)<-c("log2FC","p.value", "Counts/Cell.1","Counts/Cell.2")                               # output dataframe
   object.1 <- subset(object, idents = ident.1)                                                           # ident.1 object
   Ci.1 <- as.matrix(object.1[["RNA"]]$counts)                                                            # ident.1 count matrix
   Ni.1 <- colSums(Ci.1)                                                                                  # ident.1 Ni vector
@@ -176,39 +200,64 @@ IterWghtTtest <- function(object,features=NULL,ident.1=NULL,ident.2=NULL,fc.thr=
   Ni.2 <- colSums(Ci.2)
   Nc.2 <- ncol(Ci.2)
   Xi.2 <- Ci.2
-  for (i in c(1:nrow(Ci.2))) {Xi.2[i,]=Ci.2[i,]/Ni.2}                                      
-  rowi<-0
-  print("Performing weighted t-test:")
-  pb <- txtProgressBar(min = 0, max = length(GeneList), initial = 0, style = 3)                          # initialize progress bar# output row counter
-  for (rownum in c(1:length(GeneList))) {                                                                # Main test loop
-    AC.1 <- sum(Ci.1[GeneList[rownum],])                                                                 # ident.1 aggregated counts
-    AC.2 <- sum(Ci.2[GeneList[rownum],])                                                                 # ident.2 aggregated counts
-    Xi1<-Xi.1[GeneList[rownum],]                                                                         # ident.1 normalized counts
-    Xi2<-Xi.2[GeneList[rownum],]                                                                         # ident.2 normalized counts
-    if ((AC.1 >= min.count | AC.2 >= min.count)&                                                         # checking for minumum aggregated counts
-        ((sum(Xi1!=0)/Nc.1>min.pct)|(sum(Xi2!=0)/Nc.2>min.pct))){                                        # checking for minumum expression
-      wi.1<-ICCWeight(h=Ci.1[GeneList[rownum],],n=Ni.1,icc=icc)                                          # ident.1 weights
-      wi.2<-ICCWeight(h=Ci.2[GeneList[rownum],],n=Ni.2,icc=icc)                                          # ident.2 weights
-      fc <- sum(Xi1*wi.1)/sum(Xi2*wi.2)                                                                  # fold change
-      if (!is.na(fc)){                                                                                   # removing 0/0 division
-        if ((fc >= fc.thr | fc <= 1/fc.thr)&                                                             # checking FC threshold
-            (sum(Xi1!=0)>=3|sum(Xi2!=0)>=3)) {                                                           # checking for at least 3 nonzero values in ident.1 or ident.2                                                      
-          if(df.correction==TRUE) {wTtest <- as.numeric(alt.wttest2(Xi1,Xi2,wi.1,wi.2))}                 # weighted t-test with effective df
-          else {wTtest <- as.numeric(alt.wttest(Xi1,Xi2,wi.1,wi.2))}                                     # weighted t-test without df correction
-          if (wTtest <= max.pval) {                                                                      # checking p-value threshold    
-            rowi<-rowi+1                                                                                 # output row counter
-            output[[rowi,1]] <- as.numeric(format(log(fc,2), digits=4, scientific=FALSE))                # output
-            output[[rowi,2]] <- as.numeric(format(wTtest, digits=4, scientific=FALSE))
-            output[[rowi,3]] <- as.numeric(format(AC.1/Nc.1, digits=4, scientific=FALSE))
-            output[[rowi,4]] <- as.numeric(format(AC.2/Nc.2, digits=4, scientific=FALSE))
-            row.names(output)[rowi]<-GeneList[rownum]
-          }  
-        } 
+  for (i in c(1:nrow(Ci.2))) {Xi.2[i,]=Ci.2[i,]/Ni.2}
+  
+  # Function to process a single gene
+  process_gene <- function(gene_name) {
+    AC.1 <- sum(Ci.1[gene_name,])
+    AC.2 <- sum(Ci.2[gene_name,])
+    Xi1 <- Xi.1[gene_name,]
+    Xi2 <- Xi.2[gene_name,]
+    if ((AC.1 >= min.count | AC.2 >= min.count) &
+        ((sum(Xi1!=0)/Nc.1>min.pct)|(sum(Xi2!=0)/Nc.2>min.pct))){
+      wi.1 <- ICCWeight(h=Ci.1[gene_name,],n=Ni.1,icc=icc)
+      wi.2 <- ICCWeight(h=Ci.2[gene_name,],n=Ni.2,icc=icc)
+      fc <- sum(Xi1*wi.1)/sum(Xi2*wi.2)
+      if (!is.na(fc)){
+        if ((fc >= fc.thr | fc <= 1/fc.thr) &
+            (sum(Xi1!=0)>=3|sum(Xi2!=0)>=3)) {
+          if(df.correction==TRUE) {wTtest <- as.numeric(alt.wttest2(Xi1,Xi2,wi.1,wi.2))}
+          else {wTtest <- as.numeric(alt.wttest(Xi1,Xi2,wi.1,wi.2))}
+          if (wTtest <= max.pval) {
+            return(data.frame(
+              log2FC = as.numeric(format(log(fc,2), digits=4, scientific=FALSE)),
+              p.value = as.numeric(format(wTtest, digits=4, scientific=FALSE)),
+              "Counts/Cell.1" = as.numeric(format(AC.1/Nc.1, digits=4, scientific=FALSE)),
+              "Counts/Cell.2" = as.numeric(format(AC.2/Nc.2, digits=4, scientific=FALSE)),
+              gene = gene_name,
+              stringsAsFactors = FALSE,
+              check.names = FALSE
+            ))
+          }
+        }
       }
     }
-    setTxtProgressBar(pb, rownum)                                                                        # progress bar update
+    return(NULL)
   }
-  close(pb)                                                                                              # close progress bar
+  
+  print("Performing weighted t-test:")
+  if (n.cores > 1) {
+    # Parallel processing
+    results <- mclapply(GeneList, process_gene, mc.cores = n.cores)
+  } else {
+    # Sequential processing with progress bar
+    pb <- txtProgressBar(min = 0, max = length(GeneList), initial = 0, style = 3)
+    results <- lapply(seq_along(GeneList), function(i) {
+      setTxtProgressBar(pb, i)
+      process_gene(GeneList[i])
+    })
+    close(pb)
+  }
+  
+  # Combine results
+  results <- results[!sapply(results, is.null)]
+  if (length(results) == 0) {
+    output <- data.frame(log2FC=numeric(),p.value=numeric(),"Counts/Cell.1"=numeric(),"Counts/Cell.2"=numeric(), check.names=FALSE)
+  } else {
+    output <- do.call(rbind, results)
+    rownames(output) <- output$gene
+    output$gene <- NULL
+  }
   return(output)
 }
 alt.wttest <- function(x1, x2, w1, w2) {
@@ -494,7 +543,7 @@ WT.MultiSample <- function(sample.matrix,features=NULL,t.test=FALSE ,min.pct=0.0
 #
 #Simplified wrapper function for one-step analysis
 DGE.MultiSample<-function(object,samples.1=NULL,samples.2=NULL,features=NULL,t.test=FALSE, min.pct=0.03,fc.thr=1,max.pval=1,
-                          icc="i",df.correction=FALSE) {
+                          icc="i",df.correction=FALSE,n.cores=1) {
   if(is.null(samples.1)|is.null(samples.2)) {stop("Define sample name vectors using samples.1= and samples.2=")}
   N.1=length(samples.1)                                                              # number of samples in each group
   N.2=length(samples.2)
@@ -502,8 +551,8 @@ DGE.MultiSample<-function(object,samples.1=NULL,samples.2=NULL,features=NULL,t.t
   object.m<-CntAv(object,features,icc=icc)                                                   # Count averaging within each sample
   SM<-SampleMatrix(object.m,samples.1,samples.2)                                     # Assembly of sample matrices
   output<-WT.MultiSample(SM,features,t.test,min.pct,fc.thr,max.pval,df.correction)                        # Analysis of sample matrices
-  param<-as.character(c(t.test,min.pct,fc.thr,max.pval,icc,df.correction))
-  names(param)<-c("t.test","min.pct","fc.thr","max.pval","icc","df.correction")
+  param<-as.character(c(t.test,min.pct,fc.thr,max.pval,icc,df.correction,n.cores))
+  names(param)<-c("t.test","min.pct","fc.thr","max.pval","icc","df.correction","n.cores")
   list(DGE=output$DGE,Sstats=output$Sstats,parameters=param)
 }
 ###########################################
