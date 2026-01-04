@@ -1,5 +1,5 @@
 # WeightedTDEGenes
-Implementation of Margolin et al.'s Weighted T-test DE Gene Method as an R Package.
+Implementation of Margolin et al.'s Weighted T-test DE Gene Method as an R Package with some slight quality-of-life improvements for parallel processing and lower memory usage.
 To install:
 ```
 devtools::install_github("mikejdeines/WeightedTDEGenes")
