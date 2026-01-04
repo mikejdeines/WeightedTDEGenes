@@ -119,8 +119,8 @@ Chi2Test <- function(object,features=NULL,ident.1=NULL,ident.2=NULL,fc.thr=1,min
   if (is.null(ident.1)|is.null(ident.2)) {stop("Two identities in a Seurat object must be defined using ident.1= and ident.2=")}
   object.1 <- subset(object, idents = ident.1)                                                                       # object subsetting
   object.2 <- subset(object, idents = ident.2)
-  Ci.1 <- as.matrix(object.1[["RNA"]]$counts)                                                                        # count matrices
-  Ci.2 <- as.matrix(object.2[["RNA"]]$counts)
+  Ci.1 <- object.1[["RNA"]]$counts                                                                        # count matrices
+  Ci.2 <- object.2[["RNA"]]$counts
   Nc.1 <- ncol(Ci.1)                                                                                                 # number of cells
   Nc.2 <- ncol(Ci.2)
   AC.1 <- rowSums(Ci.1)                                                                                              # aggregate counts /gene
@@ -190,13 +190,13 @@ IterWghtTtest <- function(object,features=NULL,ident.1=NULL,ident.2=NULL,fc.thr=
   }
   if (is.null(ident.1)|is.null(ident.2)) {stop("Two identities in a Seurat object must be defined using ident.1= and ident.2=")}
   object.1 <- subset(object, idents = ident.1)                                                           # ident.1 object
-  Ci.1 <- as.matrix(object.1[["RNA"]]$counts)                                                            # ident.1 count matrix
+  Ci.1 <- object.1[["RNA"]]$counts                                                            # ident.1 count matrix
   Ni.1 <- colSums(Ci.1)                                                                                  # ident.1 Ni vector
   Nc.1 <- ncol(Ci.1)                                                                                     # ident.1 number of cells
   Xi.1 <- Ci.1                                                                                           # normalized counts initiation     
   for (i in c(1:nrow(Ci.1))) {Xi.1[i,]=Ci.1[i,]/Ni.1}                                                    # ident.1 normalized counts
   object.2 <- subset(object, idents = ident.2)
-  Ci.2 <- as.matrix(object.2[["RNA"]]$counts)
+  Ci.2 <- object.2[["RNA"]]$counts
   Ni.2 <- colSums(Ci.2)
   Nc.2 <- ncol(Ci.2)
   Xi.2 <- Ci.2
