@@ -207,8 +207,7 @@ IterWghtTtest <- function(object,features=NULL,ident.1=NULL,ident.2=NULL,fc.thr=
     Ni.1 <- colSums(Ci.1)
   }                                                                                  # ident.1 Ni vector
   Nc.1 <- ncol(Ci.1)                                                                                     # ident.1 number of cells
-  Xi.1 <- Ci.1                                                                                           # normalized counts initiation     
-  for (i in c(1:nrow(Ci.1))) {Xi.1[i,]=Ci.1[i,]/Ni.1}                                                    # ident.1 normalized counts
+  Xi.1 <- sweep(Ci.1, 2, Ni.1, FUN="/")                                                                  # ident.1 normalized counts (vectorized)
   object.2 <- subset(object, idents = ident.2)
   Ci.2 <- object.2[["RNA"]]$counts
   # Use appropriate colSums based on matrix type
@@ -218,8 +217,7 @@ IterWghtTtest <- function(object,features=NULL,ident.1=NULL,ident.2=NULL,fc.thr=
     Ni.2 <- colSums(Ci.2)
   }
   Nc.2 <- ncol(Ci.2)
-  Xi.2 <- Ci.2
-  for (i in c(1:nrow(Ci.2))) {Xi.2[i,]=Ci.2[i,]/Ni.2}
+  Xi.2 <- sweep(Ci.2, 2, Ni.2, FUN="/")                                                                  # normalized counts (vectorized)
   
   # Function to process a single gene
   process_gene <- function(gene_name) {
@@ -316,34 +314,37 @@ ICC.AN<-function(h,n){
   N=sum(n)                                                    #ANOVA ICC calculation
   k=length(n)
   n0=(1/(k-1))*(N-sum(n^2/N))
-  MSw=(1/(N-k))*(sum(h)-sum(h^2/n))
-  MSb=(1/(k-1))*(sum(h^2/n)-(1/N)*(sum(h))^2)
-  if ((MSb+(n0-1)*MSw)==0) {ICC=0}                            #setting ICC=0 when ANOVA denominator = 0
-  else ICC=(MSb-MSw)/(MSb+(n0-1)*MSw)
-  if(ICC < 0) ICC=0                                           #resetting negative ICC to 0
-  if(ICC > 1) ICC=1                                           #resetting ICC>1 to ICC=1
+  h2_n <- h^2/n                                               # cache h^2/n calculation
+  MSw=(1/(N-k))*(sum(h)-sum(h2_n))
+  MSb=(1/(k-1))*(sum(h2_n)-(1/N)*(sum(h))^2)
+  denom <- MSb+(n0-1)*MSw
+  if (denom==0) {ICC=0}                                       #setting ICC=0 when ANOVA denominator = 0
+  else ICC=(MSb-MSw)/denom
+  ICC <- max(0, min(ICC, 1))                                  #clamp ICC to [0,1] range
   return(ICC)
 }
 ICC.iter<-function(h,n){                                      #Iterative ICC calculation
   x=h/n
-  w0<-n/sum(n)                                              # initial weights 
+  sum_n <- sum(n)                                           # cache sum(n)
+  w0<-n/sum_n                                               # initial weights 
+  w0_sq_sum <- sum(w0^2)                                    # cache sum(w0^2)
   x0<-sum(x*w0)                                             # initial weighted average count
-  VarT0<-x0*(1-x0)/sum(n)                             # initial variance @ icc=0
-  VarE0<-sum(w0^2*(x-x0)^2)/(1-sum(w0^2))                   # initial measured variance with w0 weights
+  VarT0<-x0*(1-x0)/sum_n                                    # initial variance @ icc=0
+  VarE0<-sum(w0^2*(x-x0)^2)/(1-w0_sq_sum)                   # initial measured variance with w0 weights
   if (VarE0<=VarT0){icc=0}    
   else{
-    f <- function(icc,h=h,n=n) {
-      x = h/n                                                   #normalized counts
+    f <- function(icc,x,n) {
       wprop = n/(1 + icc*(n-1))                                 #proportional weights
-      w <- wprop/sum(wprop)                                     #normalized weights
+      sum_wprop <- sum(wprop)                                   #cache sum(wprop)
+      w <- wprop/sum_wprop                                      #normalized weights
       x1 = sum(x*w)                                             #weighted average
-      VarT<-x1*(1-x1)/(sum(wprop))                              #VarT 
-      VarE<-sum(w^2*(x-x1)^2)/(1-sum(w^2))                      #VarE
+      VarT<-x1*(1-x1)/sum_wprop                                 #VarT 
+      w_sq <- w^2                                               #cache w^2
+      VarE<-sum(w_sq*(x-x1)^2)/(1-sum(w_sq))                    #VarE
       VarE-VarT                                                 #VarE-VarT
     }
-    ur = uniroot(f, 0:1, n=n, h=h, check.conv=T, extendInt="downX", tol = 1e-4/max(n))
-    icc = ur$root
-    if(icc > 1) icc=1                                           #resetting ICC>1 to ICC=1
+    ur = uniroot(f, 0:1, x=x, n=n, check.conv=T, extendInt="downX", tol = 1e-4/max(n))
+    icc = min(ur$root, 1)                                       #clamp ICC to max of 1
   }
   return(icc)
 }
@@ -351,21 +352,22 @@ ICCWeight <- function(h,n,icc="i") {                     #Calculation of weights
   Nc<-length(n)
   if(length(h)!=Nc) {stop("Unequal lengths of Ni and Nzi vectors")} 
   if(Nc<3) {stop("At least 3 cells are required in each ident")}
-  if (sum(h!=0)<3){w<-rep(1/Nc,Nc)} #exit and return equal weights if the number cells/samples with nonzero counts is less than 3
-  else {
-    if(icc=="i"){icc=ICC.iter(h,n)} else {
-      if(icc=="A"){icc=ICC.AN(h,n)} else {
-        if (icc==0) {icc=0} else {
-          if (icc==1) {icc=1} else {
-            stop("Invalid icc, must be icc = 'i', 'A', 0, or 1")
-          }
-        }  
-      }
-    } 
-    wprop = n/(1 + icc*(n-1))                                 #proportional weights
-    w <- wprop/sum(wprop)
+  if (sum(h!=0)<3){return(rep(1/Nc,Nc))} #exit and return equal weights if the number cells/samples with nonzero counts is less than 3
+  
+  # Determine ICC value
+  if(icc=="i"){
+    icc_val <- ICC.iter(h,n)
+  } else if(icc=="A"){
+    icc_val <- ICC.AN(h,n)
+  } else if(icc==0 || icc==1){
+    icc_val <- icc
+  } else {
+    stop("Invalid icc, must be icc = 'i', 'A', 0, or 1")
   }
-  return(w)
+  
+  # Calculate and return weights
+  wprop <- n/(1 + icc_val*(n-1))                              #proportional weights
+  return(wprop/sum(wprop))                                    #normalized weights
 }
 ###########################################################################################################
 #     Functions for multi-sample scRNASeq analysis
@@ -394,7 +396,7 @@ CntAv<-function(object,features=NULL,icc="i"){
   rownames(Sstats)<-c("N.cells","N.counts","Counts/cell")
   Ng<-length(GeneList)
   print("Averaging counts and calculating variance for each sample:")
-  pb <- txtProgressBar(min = 0, max = Ns * Ng, initial = 0, style = 3)                   # initialize progress bar# number of genes    
+  pb <- txtProgressBar(min = 0, max = Ns, initial = 0, style = 3)                        # initialize progress bar
   for (j in c(1:Ns)){                                                                    # main loop for calculating weighted average and variance sample by sample
     sample=Samples[j]
     OBJ<-subset(object, idents=sample)                                                   # sample subsetting
@@ -404,20 +406,26 @@ CntAv<-function(object,features=NULL,icc="i"){
     Sstats["N.cells",j]<-Nc
     Sstats["N.counts",j]<-sum(Ni)
     Sstats["Counts/cell",j]<-Sstats["N.counts",j]/Sstats["N.cells",j]
-    AV<-vector()                                                                         # vector initialization
-    VAR<-vector()
-    PCT<-vector()
-    for (i in c(1:Ng)){                                                                  # gene by gene calculation subloop 
-      w<-ICCWeight(h=Ci[GeneList[i],],n=Ni,icc=icc)                                                 # statistical weights
-      x<-as.vector(100*Ci[GeneList[i],]/Ni)                                              # normalized genes counts
+    
+    # Pre-allocate result vectors
+    AV<-numeric(Ng)
+    VAR<-numeric(Ng)
+    PCT<-numeric(Ng)
+    
+    # Vectorized normalization for all genes at once
+    Xi_normalized <- sweep(Ci[GeneList,, drop=FALSE], 2, Ni, FUN="/") * 100              # normalized gene counts (% UMI)
+    
+    for (i in c(1:Ng)){                                                                  # gene by gene calculation (weights require per-gene calculation)
+      w<-ICCWeight(h=Ci[GeneList[i],],n=Ni,icc=icc)                                      # statistical weights
+      x<-as.vector(Xi_normalized[i,])                                                    # normalized genes counts
       AV[i]<-sum(x*w)                                                                    # weighted average gene count (% UMI)
       VAR[i]<-if(AV[i]!=0){sum(w^2*(x-AV[i])^2)/(1-sum(w^2))} else{1/(sum(Ni)^2)}        # variance of the weighted average or 1/sum(Ni)^2 when all x=0
       PCT[i]<-sum(Ci[GeneList[i],]!=0)/Nc                                                # fraction of cells expressing the gene
-      setTxtProgressBar(pb, i + j * Ng)                                                  # progress bar update
     }
     AVdat<-cbind(AV,VAR,PCT)                                                             # output matrix assembly
     rownames(AVdat)<-GeneList
     object@misc$AV.data[[sample]]<-as.data.frame(AVdat)                                  # writing output matrix into AV.data list within misc slot
+    setTxtProgressBar(pb, j)                                                             # progress bar update
   }
   close(pb)                                                                              # close progress bar
   object@misc$AV.data[["Sstats"]]<-as.data.frame(Sstats)
@@ -472,28 +480,31 @@ IterVar<-function(Av,Va){
   if(Nv<3) {stop("At least 3 samples are required")}
   x<-as.vector(Av)                                                                     # average counts vector
   Vari<-as.vector(Va)                                                                  # variance vector  
-  Nc<-length(x)                                                                        # number of remaining samples
-  VarT0=1/sum(1/Vari)
-  w0=(1/Vari)/sum(1/Vari)
-  x0=sum(x*w0)
-  VarE0<-sum(w0^2*(x-x0)^2)/(1-sum(w0^2))
+  inv_Vari <- 1/Vari                                                                   # cache 1/Vari
+  sum_inv_Vari <- sum(inv_Vari)                                                        # cache sum(1/Vari)
+  VarT0 <- 1/sum_inv_Vari
+  w0 <- inv_Vari/sum_inv_Vari
+  w0_sq <- w0^2                                                                        # cache w0^2
+  x0 <- sum(x*w0)
+  VarE0 <- sum(w0_sq*(x-x0)^2)/(1-sum(w0_sq))
   if(VarE0<=VarT0) {Vp=0}
   else{
-    f <- function(Vp,x=x,Vari=Vari) {
-      wprop<-1/(Vari+Vp)                                                            #proportional weights
-      VarT<-1/sum(wprop)      
-      w <- wprop/sum(wprop)                                                            #normalized weights
+    f <- function(Vp,x,Vari) {
+      wprop <- 1/(Vari+Vp)                                                            #proportional weights
+      sum_wprop <- sum(wprop)                                                         #cache sum(wprop)
+      VarT <- 1/sum_wprop      
+      w <- wprop/sum_wprop                                                            #normalized weights
       x1 = sum(x*w)                                                                    #weighted average
-      VarE<-sum(w^2*(x-x1)^2)/(1-sum(w^2))                                             #VarE
+      w_sq <- w^2                                                                      #cache w^2
+      VarE <- sum(w_sq*(x-x1)^2)/(1-sum(w_sq))                                        #VarE
       VarE-VarT                                                                
     }
     Vp1 = max(Vari)
     ur = uniroot(f, c(0,Vp1),x=x,Vari=Vari,check.conv=T,extendInt="downX", tol = min(Vari)*1e-4)
-    Vp = ur$root
+    Vp = max(ur$root, 0)                                                               # ensure non-negative
   }
-  if(Vp<0){Vp=0}
-  w=(1/(Vari+Vp))/sum(1/(Vari+Vp))
-  return(w)
+  wprop_final <- 1/(Vari+Vp)
+  return(wprop_final/sum(wprop_final))
 }
 #
 # Weighted t-test for multiple samples
