@@ -117,10 +117,9 @@ Chi2Test <- function(object,features=NULL,ident.1=NULL,ident.2=NULL,fc.thr=1,min
     GL <- as.vector(features)
   }
   if (is.null(ident.1)|is.null(ident.2)) {stop("Two identities in a Seurat object must be defined using ident.1= and ident.2=")}
-  object.1 <- subset(object, idents = ident.1)                                                                       # object subsetting
-  object.2 <- subset(object, idents = ident.2)
-  Ci.1 <- object.1[["RNA"]]$counts                                                                        # count matrices
-  Ci.2 <- object.2[["RNA"]]$counts
+  all_counts <- GetAssayData(object, assay = "RNA", slot = "counts")
+  Ci.1 <- all_counts[, Idents(object) == ident.1, drop = FALSE]                                                                   # count matrices
+  Ci.2 <- all_counts[, Idents(object) == ident.2, drop = FALSE]
   Nc.1 <- ncol(Ci.1)                                                                                                 # number of cells
   Nc.2 <- ncol(Ci.2)
   # Use appropriate rowSums based on matrix type
@@ -198,8 +197,8 @@ IterWghtTtest <- function(object,features=NULL,ident.1=NULL,ident.2=NULL,fc.thr=
     GeneList <- as.vector(features)
   }
   if (is.null(ident.1)|is.null(ident.2)) {stop("Two identities in a Seurat object must be defined using ident.1= and ident.2=")}
-  object.1 <- subset(object, idents = ident.1)                                                           # ident.1 object
-  Ci.1 <- object.1[["RNA"]]$counts                                                            # ident.1 count matrix
+  all_counts <- GetAssayData(object, assay = "RNA", slot = "counts")                                                           # ident.1 object
+  Ci.1 <- all_counts[, Idents(object) == ident.1, drop = FALSE]                                                            # ident.1 count matrix
   # Use appropriate colSums based on matrix type
   if (inherits(Ci.1, "dgCMatrix") || inherits(Ci.1, "IterableMatrix")) {
     Ni.1 <- Matrix::colSums(Ci.1)
@@ -208,8 +207,7 @@ IterWghtTtest <- function(object,features=NULL,ident.1=NULL,ident.2=NULL,fc.thr=
   }                                                                                  # ident.1 Ni vector
   Nc.1 <- ncol(Ci.1)                                                                                     # ident.1 number of cells
   Xi.1 <- sweep(Ci.1, 2, Ni.1, FUN="/")                                                                  # ident.1 normalized counts (vectorized)
-  object.2 <- subset(object, idents = ident.2)
-  Ci.2 <- object.2[["RNA"]]$counts
+  Ci.2 <- all_counts[, Idents(object) == ident.2, drop = FALSE]
   # Use appropriate colSums based on matrix type
   if (inherits(Ci.2, "dgCMatrix") || inherits(Ci.2, "IterableMatrix")) {
     Ni.2 <- Matrix::colSums(Ci.2)
